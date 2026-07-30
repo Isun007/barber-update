@@ -77,6 +77,9 @@ interface ReservationDao {
 
     @Query("UPDATE reservations SET isReviewed = :isReviewed WHERE id = :id")
     suspend fun updateReservationReviewed(id: Int, isReviewed: Boolean)
+
+    @Query("UPDATE reservations SET paymentMethod = :paymentMethod, paymentStatus = :paymentStatus WHERE id = :id")
+    suspend fun updateReservationPayment(id: Int, paymentMethod: String, paymentStatus: String)
 }
 
 @Dao

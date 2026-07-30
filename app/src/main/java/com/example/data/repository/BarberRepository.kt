@@ -178,6 +178,7 @@ class BarberRepository(context: Context) {
     
     suspend fun updateReservationStatus(id: Int, status: String) = reservationDao.updateReservationStatus(id, status)
     suspend fun updateReservationQueue(id: Int, queueNo: String) = reservationDao.updateReservationQueue(id, queueNo)
+    suspend fun updateReservationPayment(id: Int, paymentMethod: String, paymentStatus: String) = reservationDao.updateReservationPayment(id, paymentMethod, paymentStatus)
 
     // Waterfall Stage Operations
     fun getWaterfallStages(): Flow<List<WaterfallStageEntity>> = waterfallStageDao.getStages()

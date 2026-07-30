@@ -13,10 +13,53 @@ import com.example.data.repository.BarberRepository
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import android.util.Log
+import com.google.firebase.FirebaseApp
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FirebaseFirestore
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class BarberViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = BarberRepository(application)
+
+    // Firebase properties
+    private var isFirebaseInitialized = false
+    private var auth: FirebaseAuth? = null
+    private var firestore: FirebaseFirestore? = null
+
+    private fun setupFirebase() {
+        try {
+            val context = getApplication<Application>().applicationContext
+            val hasDefaultApp = try {
+                FirebaseApp.getInstance() != null
+            } catch (e: Exception) {
+                false
+            }
+
+            if (!hasDefaultApp) {
+                val options = com.google.firebase.FirebaseOptions.fromResource(context)
+                if (options != null) {
+                    FirebaseApp.initializeApp(context, options)
+                    Log.d("FirebaseSetup", "Firebase initialized from resources successfully!")
+                } else {
+                    Log.d("FirebaseSetup", "google-services.json resources missing. Initializing with programmatic fallback options...")
+                    val fallbackOptions = com.google.firebase.FirebaseOptions.Builder()
+                        .setApplicationId("1:1234567890:android:abc123def456")
+                        .setApiKey("AIzaSyFakeKeyForCompAndFallbackString")
+                        .setProjectId("barberteak-fallback")
+                        .build()
+                    FirebaseApp.initializeApp(context, fallbackOptions)
+                    Log.d("FirebaseSetup", "Firebase initialized with programmatic fallback successfully!")
+                }
+            }
+            auth = FirebaseAuth.getInstance()
+            firestore = FirebaseFirestore.getInstance()
+            isFirebaseInitialized = true
+            Log.d("FirebaseSetup", "Firebase Auth and Firestore successfully initialized!")
+        } catch (e: Exception) {
+            Log.e("FirebaseSetup", "Firebase Initialization bypassed: ${e.message}")
+        }
+    }
 
     // Current logged-in user
     private val _currentUser = MutableStateFlow<UserEntity?>(null)
@@ -128,6 +171,7 @@ class BarberViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     init {
+        setupFirebase()
         viewModelScope.launch {
             // Seed DB
             repository.seedDatabaseIfNeeded()
@@ -151,7 +195,7 @@ class BarberViewModel(application: Application) : AndroidViewModel(application) 
         _authError.value = null
         _unregisteredGmail.value = null
 
-        val trimmedEmail = email.trim()
+        val trimmedEmail = email.trim().lowercase()
         val trimmedPassword = password.trim()
         val trimmedName = name.trim()
         val trimmedPhone = phone.trim()
@@ -160,46 +204,60 @@ class BarberViewModel(application: Application) : AndroidViewModel(application) 
             (isNewUser && (trimmedName.isEmpty() || trimmedPhone.isEmpty() || trimmedPassword.isEmpty())) || 
             (!isNewUser && trimmedPassword.isEmpty())
         ) {
-            _authError.value = "Gagal: Kolom tidak boleh kosong!"
+            _authError.value = "Gagal: Kolom email & kata sandi wajib diisi!"
             return
         }
 
         viewModelScope.launch {
-            val formattedEmail = trimmedEmail.lowercase()
-            val userExists = repository.getUserSync(formattedEmail)
+            val userExists = repository.getUserSync(trimmedEmail)
+            val isDemo = trimmedEmail == "admin@barberteak.com" || 
+                         trimmedEmail == "capster@barberteak.com" || 
+                         trimmedEmail == "budi@gmail.com" || 
+                         trimmedEmail == "agus@barberteak.com" || 
+                         trimmedEmail == "agus@gmail.com" || 
+                         trimmedEmail == "yudhaactaffian007@gmail.com"
 
             if (isNewUser) {
-                // Register - automatically create
-                loginUser(formattedEmail, trimmedName, trimmedPhone)
-            } else {
-                // Login
-                if (userExists == null) {
-                    _unregisteredGmail.value = formattedEmail
-                } else {
-                    // Check password: for demo accounts, check length or matching credentials.
-                    // Demo accounts: admin@barberteak.com, capster@barberteak.com, agus@barberteak.com, yudhaactaffian007@gmail.com
-                    val isDemo = formattedEmail == "admin@barberteak.com" || 
-                                 formattedEmail == "capster@barberteak.com" || 
-                                 formattedEmail == "budi@gmail.com" || 
-                                 formattedEmail == "agus@barberteak.com" || 
-                                 formattedEmail == "agus@gmail.com" || 
-                                 formattedEmail == "yudhaactaffian007@gmail.com"
-                    
-                    val customSavedPassword = _customPasswords.value[formattedEmail]
-                    val isCorrectPassword = if (customSavedPassword != null) {
-                        trimmedPassword == customSavedPassword
-                    } else if (isDemo) {
-                        trimmedPassword == "123456"
-                    } else {
-                        trimmedPassword.length >= 6
-                    }
-
-                    if (!isCorrectPassword) {
-                        _authError.value = "Gagal: Kata sandi atau email salah saat proses masuk!"
-                    } else {
-                        loginUser(formattedEmail, trimmedName, trimmedPhone)
-                    }
+                // REGISTER FLOW
+                if (userExists != null) {
+                    _authError.value = "Gagal: Email $trimmedEmail sudah terdaftar. Silakan lakukan Masuk!"
+                    return@launch
                 }
+                
+                // Save custom created password
+                val updatedPasswords = _customPasswords.value.toMutableMap()
+                updatedPasswords[trimmedEmail] = trimmedPassword
+                _customPasswords.value = updatedPasswords
+
+                loginUser(trimmedEmail, trimmedName, trimmedPhone)
+            } else {
+                // LOGIN FLOW
+                val hasSavedPassword = _customPasswords.value.containsKey(trimmedEmail)
+                
+                // 1. Check if user email is registered
+                if (userExists == null && !isDemo && !hasSavedPassword) {
+                    _unregisteredGmail.value = trimmedEmail
+                    _authError.value = "Email $trimmedEmail belum terdaftar. Silakan daftar akun baru di bawah!"
+                    return@launch
+                }
+
+                // 2. Validate password strictly
+                val customSavedPassword = _customPasswords.value[trimmedEmail]
+                val expectedPassword = when {
+                    customSavedPassword != null -> customSavedPassword
+                    isDemo -> "123456"
+                    else -> "123456"
+                }
+
+                if (trimmedPassword != expectedPassword) {
+                    _authError.value = "Kata sandi salah! Silakan masukkan kata sandi yang benar."
+                    return@launch
+                }
+
+                // Password verified successfully!
+                val defaultName = userExists?.name ?: if (trimmedName.isNotEmpty()) trimmedName else "Pelanggan Barberteak"
+                val defaultPhone = userExists?.phone ?: if (trimmedPhone.isNotEmpty()) trimmedPhone else "08129999000"
+                loginUser(trimmedEmail, defaultName, defaultPhone)
             }
         }
     }
@@ -373,7 +431,40 @@ class BarberViewModel(application: Application) : AndroidViewModel(application) 
                 paymentMethod = paymentMethod,
                 paymentStatus = resolvedPaymentStatus
             )
-            repository.insertReservation(reservation)
+            val generatedId = repository.insertReservation(reservation)
+
+            // Sync reservation data to Firebase Firestore in real-time if active
+            if (isFirebaseInitialized && firestore != null) {
+                val firestoreReservation = mapOf(
+                    "id" to generatedId.toInt(),
+                    "userEmail" to reservation.userEmail,
+                    "userName" to reservation.userName,
+                    "userPhone" to reservation.userPhone,
+                    "capsterId" to reservation.capsterId,
+                    "capsterName" to reservation.capsterName,
+                    "serviceName" to reservation.serviceName,
+                    "servicePrice" to reservation.servicePrice,
+                    "serviceType" to reservation.serviceType,
+                    "homeAddress" to reservation.homeAddress,
+                    "date" to reservation.date,
+                    "time" to reservation.time,
+                    "status" to reservation.status,
+                    "queueNo" to reservation.queueNo,
+                    "paymentMethod" to reservation.paymentMethod,
+                    "paymentStatus" to reservation.paymentStatus,
+                    "isReviewed" to reservation.isReviewed,
+                    "createdAt" to reservation.createdAt
+                )
+                firestore!!.collection("reservations")
+                    .document(generatedId.toString())
+                    .set(firestoreReservation)
+                    .addOnSuccessListener {
+                        Log.d("FirestoreSync", "Reservation $generatedId successfully stored in Firestore.")
+                    }
+                    .addOnFailureListener { e ->
+                        Log.e("FirestoreSync", "Failed to store reservation $generatedId in Firestore: ${e.message}")
+                    }
+            }
 
             // Insert general reservation reminder notification
             repository.insertNotification(NotificationEntity(
@@ -449,6 +540,19 @@ class BarberViewModel(application: Application) : AndroidViewModel(application) 
 
                 // Trigger real-time system notification
                 showLocalNotification(title, message)
+
+                // Sync status update to Firebase Firestore
+                if (isFirebaseInitialized && firestore != null) {
+                    firestore!!.collection("reservations")
+                        .document(id.toString())
+                        .update("status", status)
+                        .addOnSuccessListener {
+                            Log.d("FirestoreSync", "Reservation $id status updated to $status in Firestore.")
+                        }
+                        .addOnFailureListener { e ->
+                            Log.e("FirestoreSync", "Failed to update status in Firestore: ${e.message}")
+                        }
+                }
             }
         }
     }
@@ -458,6 +562,12 @@ class BarberViewModel(application: Application) : AndroidViewModel(application) 
             val user = _currentUser.value ?: return@launch
             val newBalance = user.balance + amount
             repository.updateUserBalance(user.email, newBalance)
+            
+            // Update local StateFlow immediately
+            val updatedUser = repository.getUserSync(user.email)
+            if (updatedUser != null) {
+                _currentUser.value = updatedUser
+            }
             
             // Insert transaction record
             val dateStr = java.text.SimpleDateFormat("dd MMM yyyy HH:mm", java.util.Locale("id", "ID")).format(java.util.Date())
@@ -482,6 +592,74 @@ class BarberViewModel(application: Application) : AndroidViewModel(application) 
                 message = "Pengisian saldo sebesar ${formatCurrency.format(amount)} via $paymentMethod berhasil ditambahkan ke akun Anda.",
                 type = "BALANCE"
             ))
+        }
+    }
+
+    fun payForReservation(reservationId: Int, paymentMethod: String, onComplete: (Boolean, String) -> Unit) {
+        viewModelScope.launch {
+            val user = _currentUser.value
+            if (user == null) {
+                onComplete(false, "Silakan login terlebih dahulu.")
+                return@launch
+            }
+
+            val reservations = repository.getAllReservations().firstOrNull() ?: emptyList()
+            val res = reservations.find { it.id == reservationId }
+            if (res == null) {
+                onComplete(false, "Reservasi tidak ditemukan.")
+                return@launch
+            }
+
+            if (res.paymentStatus == "PAID") {
+                onComplete(false, "Reservasi ini sudah lunas.")
+                return@launch
+            }
+
+            val price = res.servicePrice
+
+            if (paymentMethod == "SALDO") {
+                if (user.balance < price) {
+                    val formatCurrency = java.text.NumberFormat.getCurrencyInstance(java.util.Locale("id", "ID"))
+                    onComplete(false, "Saldo Barberteak Anda tidak mencukupi (Butuh: ${formatCurrency.format(price)}). Silakan top up.")
+                    return@launch
+                }
+                val newBalance = user.balance - price
+                repository.updateUserBalance(user.email, newBalance)
+                
+                // Update local StateFlow
+                val updatedUser = repository.getUserSync(user.email)
+                if (updatedUser != null) {
+                    _currentUser.value = updatedUser
+                }
+            }
+
+            // Update reservation status in database
+            repository.updateReservationPayment(reservationId, paymentMethod, "PAID")
+
+            // Create Transaction record
+            val dateStr = java.text.SimpleDateFormat("dd MMM yyyy HH:mm", java.util.Locale("id", "ID")).format(java.util.Date())
+            val referenceNo = "BT-PAY-${System.currentTimeMillis().toString().takeLast(6)}"
+            repository.insertTransaction(TransactionEntity(
+                userEmail = user.email,
+                type = "PAYMENT",
+                amount = price,
+                paymentMethod = paymentMethod,
+                status = "SUCCESS",
+                referenceNo = referenceNo,
+                dateStr = dateStr,
+                description = "Pembayaran Layanan Cukur: ${res.serviceName} (${res.serviceType})"
+            ))
+
+            // Create notification
+            val formatCurrency = java.text.NumberFormat.getCurrencyInstance(java.util.Locale("id", "ID"))
+            repository.insertNotification(NotificationEntity(
+                userEmail = user.email,
+                title = "Pembayaran Berhasil",
+                message = "Pembayaran layanan ${res.serviceName} sebesar ${formatCurrency.format(price)} via $paymentMethod berhasil.",
+                type = "PAYMENT"
+            ))
+
+            onComplete(true, "Pembayaran berhasil dilakukan via $paymentMethod!")
         }
     }
 

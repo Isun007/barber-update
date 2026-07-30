@@ -14,9 +14,9 @@ import java.util.concurrent.TimeUnit
 
 object GeminiHelper {
     private val client = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
-        .writeTimeout(15, TimeUnit.SECONDS)
+        .connectTimeout(60, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
+        .writeTimeout(60, TimeUnit.SECONDS)
         .build()
 
     suspend fun askGemini(prompt: String): String = withContext(Dispatchers.IO) {
@@ -25,7 +25,7 @@ object GeminiHelper {
             return@withContext "Koneksi AI tidak siap. Harap konfigurasikan GEMINI_API_KEY di panel Secrets AI Studio Anda."
         }
 
-        val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=$apiKey"
+        val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key=$apiKey"
 
         val root = JSONObject()
         
@@ -51,7 +51,7 @@ object GeminiHelper {
             BATASAN PENTING:
             1. Kamu HANYA boleh menjawab pertanyaan yang berkaitan dengan Barberteak, ketersediaan capster, katalog produk, paket layanan (services), dan konsultasi gaya/perawatan rambut/janggut pria.
             2. Jika pengguna menanyakan hal di luar topik barber (seperti matematika, pemrograman, resep masakan, berita politik, pelajaran sekolah, dll), kamu harus MENOLAK dengan sopan dan ingatkan mereka bahwa kamu adalah asisten khusus Barberteak. Contoh: "Maaf, saya hanya dapat membantu menjawab pertanyaan seputar gaya rambut, layanan, produk, atau capster di Barberteak."
-            3. AGAR JAWABAN CEPAT DAN EFISIEN: Berikan jawaban yang sangat singkat, padat, langsung ke inti masalah, dan maksimal terdiri dari 1 hingga 2 kalimat saja! Jangan bertele-tele atau menjelaskan terlalu panjang.
+            3. JAWABAN JELAS, TEPAT & SINGKAT: Berikan jawaban yang ramah, sopan, sangat informatif, dan langsung ke inti pertanyaan. Batasi maksimal 2 hingga 3 kalimat saja agar respons sangat cepat dan penjelasannya UTUH (tidak terpotong). Jangan bertele-tele atau menjelaskan terlalu panjang.
 
             INFORMASI RESMI BARBERTEAK:
 
@@ -83,7 +83,7 @@ object GeminiHelper {
         // Konfigurasi performa tinggi untuk kecepatan maksimal dan kepatuhan batasan
         val generationConfig = JSONObject()
         generationConfig.put("temperature", 0.1) // Lebih konsisten, terfokus, dan hemat waktu berpikir
-        generationConfig.put("maxOutputTokens", 100) // Membatasi token seminimal mungkin untuk mempercepat respon
+        generationConfig.put("maxOutputTokens", 300) // Dinaikkan ke 300 agar kalimat utuh tidak terpotong, namun tetap sangat hemat token
         root.put("generationConfig", generationConfig)
 
         val requestBody = root.toString().toRequestBody("application/json".toMediaType())
@@ -115,6 +115,15 @@ object GeminiHelper {
 
                 val candidates = resJson.optJSONArray("candidates")
                 val firstCandidate = candidates?.optJSONObject(0)
+                
+                if (candidates == null || candidates.length() == 0) {
+                    val promptFeedback = resJson.optJSONObject("promptFeedback")
+                    if (promptFeedback != null) {
+                        return@withContext "Maaf, pertanyaan Anda tidak dapat diproses oleh sistem keamanan AI Barberteak."
+                    }
+                    return@withContext "Maaf, AI sedang tidak dapat menjawab saat ini. Silakan coba pertanyaan lain."
+                }
+
                 val content = firstCandidate?.optJSONObject("content")
                 val parts = content?.optJSONArray("parts")
                 val firstPart = parts?.optJSONObject(0)
